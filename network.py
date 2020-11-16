@@ -3,39 +3,37 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from pytorch_GAN_zoo.models.networks.custom_layers import EqualizedConv2d, EqualizedLinear, NormalizationLayer, \
-    Upscale2d
-from pytorch_GAN_zoo.models.utils.utils import num_flat_features
-from pytorch_GAN_zoo.models.networks.mini_batch_stddev_module import miniBatchStdDev
+from layers import flatten, upscale2d, EqualizedLinear, EqualizedConv2d, NormalizationLayer
+from network_utils import mini_batch_std_dev
 
 
-class PGANGenerator(nn.Module):
+class Generator(nn.Module):
     def __init__(self):
-        super(PGANGenerator, self).__init__()
-        self.depth_scale0 = 512
+        super(Generator, self).__init__()
+        self.dim_latent = 1024
+        self.depth_scale0 = 128
+        self.dim_output = 3
         self.equalized_lr = True
         self.init_bias_to_zero = True
-        self.dim_output = 108
-        self.dim_latent = 512
         self.scales_depth = [self.depth_scale0]
 
         self.scale_layers = nn.ModuleList()
 
         self.to_rgb_layers = nn.ModuleList()
         self.to_rgb_layers.append(EqualizedConv2d(self.depth_scale0, self.dim_output, 1, equalized=self.equalized_lr,
-                                                  initBiasToZero=self.init_bias_to_zero))
+                                                  init_bias_to_zero=self.init_bias_to_zero))
 
         self.format_layer = EqualizedLinear(self.dim_latent, 16 * self.scales_depth[0], equalized=self.equalized_lr,
-                                            initBiasToZero=self.init_bias_to_zero)
+                                            init_bias_to_zero=self.init_bias_to_zero)
 
         self.group_scale0 = nn.ModuleList()
         self.group_scale0.append(
             EqualizedConv2d(self.depth_scale0, self.depth_scale0, 3, padding=1, equalized=self.equalized_lr,
-                            initBiasToZero=self.init_bias_to_zero))
+                            init_bias_to_zero=self.init_bias_to_zero))
 
         self.alpha = 0
 
-        self.leaky_relu = torch.nn.LeakyReLU(0.2)
+        self.leaky_relu = torch.nn.LeakyReLU(0.2, inplace=True)
 
         self.normalization_layer = NormalizationLayer()
 
@@ -48,20 +46,20 @@ class PGANGenerator(nn.Module):
         self.scale_layers.append(nn.ModuleList())
         self.scale_layers[-1].append(
             EqualizedConv2d(depth_last_scale, depth_new_scale, 3, padding=1, equalized=self.equalized_lr,
-                            initBiasToZero=self.init_bias_to_zero))
+                            init_bias_to_zero=self.init_bias_to_zero))
         self.scale_layers[-1].append(
             EqualizedConv2d(depth_new_scale, depth_new_scale, 3, padding=1, equalized=self.equalized_lr,
-                            initBiasToZero=self.init_bias_to_zero))
+                            init_bias_to_zero=self.init_bias_to_zero))
 
         self.to_rgb_layers.append(EqualizedConv2d(depth_new_scale, self.dim_output, 1, equalized=self.equalized_lr,
-                                                  initBiasToZero=self.init_bias_to_zero))
+                                                  init_bias_to_zero=self.init_bias_to_zero))
 
     def set_alpha(self, alpha):
         self.alpha = alpha
 
     def forward(self, x):
         x = self.normalization_layer(x)
-        x = x.view(-1, num_flat_features(x))
+        x = flatten(x)
         x = self.leaky_relu(self.format_layer(x))
         x = x.view(x.size()[0], -1, 4, 4)
         x = self.normalization_layer(x)
@@ -72,16 +70,16 @@ class PGANGenerator(nn.Module):
 
         if self.alpha > 0 and len(self.scale_layers) == 1:
             y = self.to_rgb_layers[-2](x)
-            y = Upscale2d(y)
+            y = upscale2d(y)
 
         for scale, layer_group in enumerate(self.scale_layers, 0):
-            x = Upscale2d(x)
+            x = upscale2d(x)
             for conv_layer in layer_group:
                 x = self.leaky_relu(conv_layer(x))
                 x = self.normalization_layer(x)
             if self.alpha > 0 and scale == (len(self.scale_layers) - 2):
                 y = self.to_rgb_layers[-2](x)
-                y = Upscale2d(y)
+                y = upscale2d(y)
 
         x = self.to_rgb_layers[-1](x)
 
@@ -94,14 +92,14 @@ class PGANGenerator(nn.Module):
         return x
 
 
-class PGANDiscriminator(nn.Module):
+class Discriminator(nn.Module):
     def __init__(self):
-        super(PGANDiscriminator, self).__init__()
-        self.depth_scale0 = 512
+        super(Discriminator, self).__init__()
+        self.dim_input = 3
+        self.depth_scale0 = 128
+        self.size_decision_layer = 1
         self.equalized_lr = True
         self.init_bias_to_zero = True
-        self.dim_input = 108
-        self.size_decision_layer = 1
         self.mini_batch_normalization = True
         self.dim_entry_scale0 = self.depth_scale0 + 1
         self.scales_depth = [self.depth_scale0]
@@ -110,23 +108,24 @@ class PGANDiscriminator(nn.Module):
 
         self.from_rgb_layers = nn.ModuleList()
         self.from_rgb_layers.append(EqualizedConv2d(self.dim_input, self.depth_scale0, 1, equalized=self.equalized_lr,
-                                                    initBiasToZero=self.init_bias_to_zero))
+                                                    init_bias_to_zero=self.init_bias_to_zero))
 
         self.merge_layers = nn.ModuleList()
 
         self.decision_layer = EqualizedLinear(self.scales_depth[0], self.size_decision_layer,
-                                              equalized=self.equalized_lr, initBiasToZero=self.init_bias_to_zero)
+                                              equalized=self.equalized_lr, init_bias_to_zero=self.init_bias_to_zero)
 
         self.group_scale0 = nn.ModuleList()
         self.group_scale0.append(
             EqualizedConv2d(self.dim_entry_scale0, self.depth_scale0, 3, padding=1, equalized=self.equalized_lr,
-                            initBiasToZero=self.init_bias_to_zero))
-        self.group_scale0.append(EqualizedLinear(self.depth_scale0 * 16, self.depth_scale0, equalized=self.equalized_lr,
-                                                 initBiasToZero=self.init_bias_to_zero))
+                            init_bias_to_zero=self.init_bias_to_zero))
+        self.group_scale0.append(
+            EqualizedLinear(self.depth_scale0 * 16, self.depth_scale0, equalized=self.equalized_lr,
+                            init_bias_to_zero=self.init_bias_to_zero))
 
         self.alpha = 0
 
-        self.leaky_relu = torch.nn.LeakyReLU(0.2)
+        self.leaky_relu = torch.nn.LeakyReLU(0.2, inplace=True)
 
     def add_scale(self, depth_new_scale):
         depth_last_scale = self.scales_depth[-1]
@@ -135,13 +134,14 @@ class PGANDiscriminator(nn.Module):
         self.scale_layers.append(nn.ModuleList())
         self.scale_layers[-1].append(
             EqualizedConv2d(depth_new_scale, depth_new_scale, 3, padding=1, equalized=self.equalized_lr,
-                            initBiasToZero=self.init_bias_to_zero))
+                            init_bias_to_zero=self.init_bias_to_zero))
         self.scale_layers[-1].append(
             EqualizedConv2d(depth_new_scale, depth_last_scale, 3, padding=1, equalized=self.equalized_lr,
-                            initBiasToZero=self.init_bias_to_zero))
+                            init_bias_to_zero=self.init_bias_to_zero))
 
-        self.from_rgb_layers.append(EqualizedConv2d(self.dim_input, depth_new_scale, 1, equalized=self.equalized_lr,
-                                                    initBiasToZero=self.init_bias_to_zero))
+        self.from_rgb_layers.append(
+            EqualizedConv2d(self.dim_input, depth_new_scale, 1, equalized=self.equalized_lr,
+                            init_bias_to_zero=self.init_bias_to_zero))
 
     def set_alpha(self, alpha):
         self.alpha = alpha
@@ -149,7 +149,7 @@ class PGANDiscriminator(nn.Module):
     def forward(self, x, get_feature=False):
         if self.alpha > 0 and len(self.from_rgb_layers) > 1:
             y = F.avg_pool2d(x, (2, 2))
-            y = self.leaky_relu(self.from_rgb_layers[- 2](y))
+            y = self.leaky_relu(self.from_rgb_layers[-2](y))
 
         x = self.leaky_relu(self.from_rgb_layers[-1](x))
 
@@ -170,11 +170,11 @@ class PGANDiscriminator(nn.Module):
             shift -= 1
 
         if self.mini_batch_normalization:
-            x = miniBatchStdDev(x)
+            x = mini_batch_std_dev(x)
 
         x = self.leaky_relu(self.group_scale0[0](x))
 
-        x = x.view(-1, num_flat_features(x))
+        x = flatten(x)
 
         x = self.leaky_relu(self.group_scale0[1](x))
 
