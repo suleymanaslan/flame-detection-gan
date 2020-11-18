@@ -125,4 +125,4 @@ dmypy.json
 .pyre/
 
 .idea/
-pytorch_GAN_zoo/
+hmdb51/
