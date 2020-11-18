@@ -7,12 +7,23 @@ from layers import flatten, upscale2d, EqualizedLinear, EqualizedConv2d, Normali
 from network_utils import mini_batch_std_dev
 
 
+class GeneratorFormat(nn.Module):
+    def __init__(self, frames_per_clip):
+        super(GeneratorFormat, self).__init__()
+        self.frames_per_clip = frames_per_clip
+
+    def forward(self, x, size):
+        return x.view(x.shape[0], 3, self.frames_per_clip, size, size)
+
+
 class Generator(nn.Module):
-    def __init__(self):
+    def __init__(self, frames_per_clip):
         super(Generator, self).__init__()
+        self.generator_format = GeneratorFormat(frames_per_clip)
+
         self.dim_latent = 1024
-        self.depth_scale0 = 128
-        self.dim_output = 3
+        self.depth_scale0 = 256
+        self.dim_output = 3 * frames_per_clip
         self.equalized_lr = True
         self.init_bias_to_zero = True
         self.scales_depth = [self.depth_scale0]
@@ -39,7 +50,9 @@ class Generator(nn.Module):
 
         self.generation_activation = None
 
-    def add_scale(self, depth_new_scale):
+    def add_scale(self, depth_new_scale=None):
+        if depth_new_scale == None:
+            depth_new_scale = self.depth_scale0
         depth_last_scale = self.scales_depth[-1]
         self.scales_depth.append(depth_new_scale)
 
@@ -57,7 +70,7 @@ class Generator(nn.Module):
     def set_alpha(self, alpha):
         self.alpha = alpha
 
-    def forward(self, x):
+    def forward(self, x, size):
         x = self.normalization_layer(x)
         x = flatten(x)
         x = self.leaky_relu(self.format_layer(x))
@@ -89,15 +102,30 @@ class Generator(nn.Module):
         if self.generation_activation is not None:
             x = self.generation_activation(x)
 
+        x = self.generator_format(x, size)
+
         return x
 
 
+class DiscriminatorFormat(nn.Module):
+    def __init__(self, frames_per_clip):
+        super(DiscriminatorFormat, self).__init__()
+        self.frames_per_clip = frames_per_clip
+        self.dim_out = 3 * self.frames_per_clip
+
+    def forward(self, x, size):
+        return x.view(x.shape[0], 3 * self.frames_per_clip, size, size)
+
+
 class Discriminator(nn.Module):
-    def __init__(self):
+    def __init__(self, frames_per_clip):
         super(Discriminator, self).__init__()
-        self.dim_input = 3
-        self.depth_scale0 = 128
+        self.discriminator_format = DiscriminatorFormat(frames_per_clip)
+        self.dim_input = self.discriminator_format.dim_out
+
+        self.depth_scale0 = 256
         self.size_decision_layer = 1
+        self.size_classification_layer = 1
         self.equalized_lr = True
         self.init_bias_to_zero = True
         self.mini_batch_normalization = True
@@ -114,6 +142,7 @@ class Discriminator(nn.Module):
 
         self.decision_layer = EqualizedLinear(self.scales_depth[0], self.size_decision_layer,
                                               equalized=self.equalized_lr, init_bias_to_zero=self.init_bias_to_zero)
+        self.classification_layer = nn.Linear(self.scales_depth[0], self.size_classification_layer)
 
         self.group_scale0 = nn.ModuleList()
         self.group_scale0.append(
@@ -126,8 +155,11 @@ class Discriminator(nn.Module):
         self.alpha = 0
 
         self.leaky_relu = torch.nn.LeakyReLU(0.2, inplace=True)
+        self.sigmoid = torch.nn.Sigmoid()
 
-    def add_scale(self, depth_new_scale):
+    def add_scale(self, depth_new_scale=None):
+        if depth_new_scale == None:
+            depth_new_scale = self.depth_scale0
         depth_last_scale = self.scales_depth[-1]
         self.scales_depth.append(depth_new_scale)
 
@@ -146,7 +178,9 @@ class Discriminator(nn.Module):
     def set_alpha(self, alpha):
         self.alpha = alpha
 
-    def forward(self, x, get_feature=False):
+    def forward(self, x, size, get_classification=False, get_feature=False):
+        x = self.discriminator_format(x, size)
+
         if self.alpha > 0 and len(self.from_rgb_layers) > 1:
             y = F.avg_pool2d(x, (2, 2))
             y = self.leaky_relu(self.from_rgb_layers[-2](y))
@@ -178,7 +212,10 @@ class Discriminator(nn.Module):
 
         x = self.leaky_relu(self.group_scale0[1](x))
 
-        out = self.decision_layer(x)
+        if get_classification:
+            out = self.sigmoid(self.classification_layer(x))
+        else:
+            out = self.decision_layer(x)
 
         if not get_feature:
             return out
