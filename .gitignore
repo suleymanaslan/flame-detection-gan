@@ -127,3 +127,4 @@ dmypy.json
 .idea/
 hmdb51/
 trained_models/
+.tmp.driveupload
